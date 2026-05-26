@@ -22,6 +22,16 @@ function cleanName(name) {
     .slice(0, 16);
 }
 
+function cleanColor(color) {
+  const c = String(color || "").trim().toLowerCase();
+
+  if (c === "darkyellow") return "darkyellow";
+  if (c === "skyblue") return "skyblue";
+  if (c === "purple") return "purple";
+
+  return "red";
+}
+
 function cleanOld() {
   const now = Date.now();
 
@@ -35,10 +45,10 @@ function cleanOld() {
 function makeText() {
   cleanOld();
 
-  let lines = [];
+  const lines = [];
 
   for (const [name, p] of players.entries()) {
-    lines.push(`${name}|${p.x}|${p.y}`);
+    lines.push(`${name}|${p.x}|${p.y}|${p.color}`);
   }
 
   return lines.join("\n");
@@ -56,11 +66,13 @@ app.post("/xy", (req, res) => {
   const name = cleanName(req.body.name);
   const x = parseInt(req.body.x, 10);
   const y = parseInt(req.body.y, 10);
+  const color = cleanColor(req.body.color);
 
   if (name && Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0) {
     players.set(name, {
       x,
       y,
+      color,
       t: Date.now()
     });
   }
