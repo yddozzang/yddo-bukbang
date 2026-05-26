@@ -50,13 +50,64 @@ function cleanOld() {
   }
 }
 
+function getMajorBless() {
+  const groups = new Map();
+
+  for (const [, p] of players.entries()) {
+    const bx = Number.isFinite(p.blessX) ? p.blessX : -1;
+    const by = Number.isFinite(p.blessY) ? p.blessY : -1;
+
+    if (bx < 0 || by < 0) continue;
+
+    const key = `${bx},${by}`;
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        x: bx,
+        y: by,
+        count: 0,
+        latest: 0
+      });
+    }
+
+    const g = groups.get(key);
+    g.count++;
+    g.latest = Math.max(g.latest, p.blessT || 0);
+  }
+
+  let best = null;
+
+  for (const g of groups.values()) {
+    if (!best) {
+      best = g;
+      continue;
+    }
+
+    // 다수결: count 많은 좌표 우선
+    // 동률이면 더 최근에 올라온 좌표 우선
+    if (g.count > best.count || (g.count === best.count && g.latest > best.latest)) {
+      best = g;
+    }
+  }
+
+  return best;
+}
+
 function makeText() {
   cleanOld();
 
   const lines = [];
 
   for (const [name, p] of players.entries()) {
-    lines.push(`${name}|${p.x}|${p.y}|${p.color}`);
+    lines.push(`P|${name}|${p.x}|${p.y}|${p.color}`);
+  }
+
+  // 축복은 다수결 1개만 전송.
+  // 예: 92,117이 3명 / 82,117이 1명이면 92,117만 내려감.
+  const bless = getMajorBless();
+
+  if (bless) {
+    lines.push(`B|${bless.x}|${bless.y}|${bless.count}`);
   }
 
   return lines.join("\n");
@@ -76,7 +127,6 @@ app.post("/check", (req, res) => {
 });
 
 app.get("/xy", (req, res) => {
-  // C#은 POST만 사용한다. 브라우저 확인용으로 목록만 보여준다.
   res.type("text/plain").send(makeText());
 });
 
@@ -91,13 +141,29 @@ app.post("/xy", (req, res) => {
   const y = parseInt(req.body.y, 10);
   const color = cleanColor(req.body.color);
 
+  const blessX = parseInt(req.body.blessX, 10);
+  const blessY = parseInt(req.body.blessY, 10);
+
   if (name && Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0) {
-    players.set(name, {
+    const old = players.get(name) || {};
+
+    const next = {
       x,
       y,
       color,
-      t: Date.now()
-    });
+      t: Date.now(),
+      blessX: old.blessX ?? -1,
+      blessY: old.blessY ?? -1,
+      blessT: old.blessT ?? 0
+    };
+
+    if (Number.isFinite(blessX) && Number.isFinite(blessY) && blessX >= 0 && blessY >= 0) {
+      next.blessX = blessX;
+      next.blessY = blessY;
+      next.blessT = Date.now();
+    }
+
+    players.set(name, next);
   }
 
   res.type("text/plain").send(makeText());
