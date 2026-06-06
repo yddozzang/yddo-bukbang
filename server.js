@@ -14,8 +14,12 @@ const PORT = process.env.PORT || 3000;
 const PLAYER_TTL_MS = 1000;
 
 // 축복 좌표 유효 시간.
-// 접속 인원 중 누구도 5초 동안 유효한 축복 좌표를 보내지 않으면 축복 삭제.
-const BLESS_TTL_MS = 5000;
+// 사람 좌표처럼 1초 동안 갱신이 없으면 삭제.
+const BLESS_TTL_MS = 1000;
+
+// 1등 좌표 유효 시간.
+// 사람 좌표처럼 1초 동안 갱신이 없으면 삭제.
+const FIRST_TTL_MS = 1000;
 
 // Render Environment Variables에서 MAP_PASS를 바꾸면 접속 비밀번호가 바뀜.
 // MAP_PASS를 설정하지 않으면 기본값은 yddo123.
@@ -36,11 +40,24 @@ function cleanName(name) {
 function cleanColor(color) {
   const c = String(color || "").trim().toLowerCase();
 
+  // 기존 색 호환
+  if (c === "red") return "red";
   if (c === "darkyellow") return "darkyellow";
   if (c === "skyblue") return "skyblue";
   if (c === "purple") return "purple";
 
-  return "red";
+  // 새 선택지 호환
+  if (c === "yellow") return "darkyellow";
+  if (c === "blue") return "skyblue";
+  if (c === "green") return "green";
+  if (c === "whitecircle" || c === "white_circle" || c === "whiteinner" || c === "white_inner") {
+    return "whitecircle";
+  }
+  if (c === "whitex" || c === "white_x") {
+    return "whitex";
+  }
+
+  return "skyblue";
 }
 
 function okPass(pass) {
@@ -57,24 +74,24 @@ function cleanOld() {
   }
 }
 
-function getMajorBless() {
+function getMajorPoint(xKey, yKey, tKey, ttlMs) {
   const now = Date.now();
   const groups = new Map();
 
   for (const [, p] of players.entries()) {
-    const bx = Number.isFinite(p.blessX) ? p.blessX : -1;
-    const by = Number.isFinite(p.blessY) ? p.blessY : -1;
-    const bt = p.blessT || 0;
+    const px = Number.isFinite(p[xKey]) ? p[xKey] : -1;
+    const py = Number.isFinite(p[yKey]) ? p[yKey] : -1;
+    const pt = p[tKey] || 0;
 
-    if (bx < 0 || by < 0) continue;
-    if (now - bt > BLESS_TTL_MS) continue;
+    if (px < 0 || py < 0) continue;
+    if (now - pt > ttlMs) continue;
 
-    const key = `${bx},${by}`;
+    const key = `${px},${py}`;
 
     if (!groups.has(key)) {
       groups.set(key, {
-        x: bx,
-        y: by,
+        x: px,
+        y: py,
         count: 0,
         latest: 0
       });
@@ -82,7 +99,7 @@ function getMajorBless() {
 
     const g = groups.get(key);
     g.count++;
-    g.latest = Math.max(g.latest, bt);
+    g.latest = Math.max(g.latest, pt);
   }
 
   let best = null;
@@ -103,6 +120,14 @@ function getMajorBless() {
   return best;
 }
 
+function getMajorBless() {
+  return getMajorPoint("blessX", "blessY", "blessT", BLESS_TTL_MS);
+}
+
+function getMajorFirst() {
+  return getMajorPoint("firstX", "firstY", "firstT", FIRST_TTL_MS);
+}
+
 function makeText() {
   cleanOld();
 
@@ -116,6 +141,13 @@ function makeText() {
 
   if (bless) {
     lines.push(`B|${bless.x}|${bless.y}|${bless.count}`);
+  }
+
+  const first = getMajorFirst();
+
+  if (first) {
+    // F = 1등 좌표
+    lines.push(`F|${first.x}|${first.y}|${first.count}`);
   }
 
   return lines.join("\n");
@@ -152,6 +184,13 @@ app.post("/xy", (req, res) => {
   const blessX = parseInt(req.body.blessX, 10);
   const blessY = parseInt(req.body.blessY, 10);
 
+  // 클라가 firstX/firstY 또는 rank1X/rank1Y 둘 중 뭐로 보내도 받음.
+  const firstXRaw = req.body.firstX !== undefined ? req.body.firstX : req.body.rank1X;
+  const firstYRaw = req.body.firstY !== undefined ? req.body.firstY : req.body.rank1Y;
+
+  const firstX = parseInt(firstXRaw, 10);
+  const firstY = parseInt(firstYRaw, 10);
+
   if (name && Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0) {
     const old = players.get(name) || {};
 
@@ -160,9 +199,14 @@ app.post("/xy", (req, res) => {
       y,
       color,
       t: Date.now(),
+
       blessX: old.blessX ?? -1,
       blessY: old.blessY ?? -1,
-      blessT: old.blessT ?? 0
+      blessT: old.blessT ?? 0,
+
+      firstX: old.firstX ?? -1,
+      firstY: old.firstY ?? -1,
+      firstT: old.firstT ?? 0
     };
 
     if (Number.isFinite(blessX) && Number.isFinite(blessY)) {
@@ -173,10 +217,25 @@ app.post("/xy", (req, res) => {
         next.blessT = Date.now();
       } else {
         // 인식 실패자는 축복 좌표 제거.
-        // 다른 사람이 5초 안에 유효 좌표를 보내면 축복은 유지됨.
+        // 다른 사람이 1초 안에 유효 좌표를 보내면 축복은 유지됨.
         next.blessX = -1;
         next.blessY = -1;
         next.blessT = 0;
+      }
+    }
+
+    if (Number.isFinite(firstX) && Number.isFinite(firstY)) {
+      if (firstX >= 0 && firstY >= 0) {
+        // 유효 1등 좌표를 보낸 경우에만 1등 갱신 시간 갱신.
+        next.firstX = firstX;
+        next.firstY = firstY;
+        next.firstT = Date.now();
+      } else {
+        // 인식 실패자는 1등 좌표 제거.
+        // 다른 사람이 1초 안에 유효 좌표를 보내면 1등은 유지됨.
+        next.firstX = -1;
+        next.firstY = -1;
+        next.firstT = 0;
       }
     }
 
