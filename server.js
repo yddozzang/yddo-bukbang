@@ -14,11 +14,13 @@ const PORT = process.env.PORT || 3000;
 const PLAYER_TTL_MS = 1000;
 
 // 축복 좌표 유효 시간.
-// 사람 좌표처럼 1초 동안 갱신이 없으면 삭제.
+// 마지막 정상 좌표 수신 후 1초 동안 유지.
+// -1이 와도 즉시 삭제하지 않고, 이 시간이 지나면 삭제됨.
 const BLESS_TTL_MS = 1000;
 
 // 1등 좌표 유효 시간.
-// 사람 좌표처럼 1초 동안 갱신이 없으면 삭제.
+// 마지막 정상 좌표 수신 후 1초 동안 유지.
+// -1이 와도 즉시 삭제하지 않고, 이 시간이 지나면 삭제됨.
 const FIRST_TTL_MS = 1000;
 
 // Render Environment Variables에서 MAP_PASS를 바꾸면 접속 비밀번호가 바뀜.
@@ -211,32 +213,30 @@ app.post("/xy", (req, res) => {
 
     if (Number.isFinite(blessX) && Number.isFinite(blessY)) {
       if (blessX >= 0 && blessY >= 0) {
-        // 유효 축복 좌표를 보낸 경우에만 축복 갱신 시간 갱신.
+        // 유효 축복 좌표만 갱신.
         next.blessX = blessX;
         next.blessY = blessY;
         next.blessT = Date.now();
-      } else {
-        // 인식 실패자는 축복 좌표 제거.
-        // 다른 사람이 1초 안에 유효 좌표를 보내면 축복은 유지됨.
-        next.blessX = -1;
-        next.blessY = -1;
-        next.blessT = 0;
       }
+
+      // 중요:
+      // blessX/blessY가 -1이어도 즉시 삭제하지 않는다.
+      // 마지막 정상 축복 좌표는 BLESS_TTL_MS 동안 유지된다.
+      // 진짜로 아무도 정상 좌표를 안 보내면 getMajorBless()에서 자동으로 사라진다.
     }
 
     if (Number.isFinite(firstX) && Number.isFinite(firstY)) {
       if (firstX >= 0 && firstY >= 0) {
-        // 유효 1등 좌표를 보낸 경우에만 1등 갱신 시간 갱신.
+        // 유효 1등 좌표만 갱신.
         next.firstX = firstX;
         next.firstY = firstY;
         next.firstT = Date.now();
-      } else {
-        // 인식 실패자는 1등 좌표 제거.
-        // 다른 사람이 1초 안에 유효 좌표를 보내면 1등은 유지됨.
-        next.firstX = -1;
-        next.firstY = -1;
-        next.firstT = 0;
       }
+
+      // 중요:
+      // firstX/firstY가 -1이어도 즉시 삭제하지 않는다.
+      // 마지막 정상 1등 좌표는 FIRST_TTL_MS 동안 유지된다.
+      // 진짜로 아무도 정상 좌표를 안 보내면 getMajorFirst()에서 자동으로 사라진다.
     }
 
     players.set(name, next);
