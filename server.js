@@ -9,34 +9,63 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
+// ================================================================
+// 기존 패자 지도 설정
+// ================================================================
+
 // 사람 좌표 유효 시간.
 // 1초 동안 갱신이 없으면 서버 목록에서 사라짐.
 const PLAYER_TTL_MS = 1000;
 
 // 축복 좌표 유효 시간.
-// 마지막 정상 좌표 수신 후 1초 동안 유지.
-// -1이 와도 즉시 삭제하지 않고, 이 시간이 지나면 삭제됨.
 const BLESS_TTL_MS = 1000;
 
 // 1등 좌표 유효 시간.
-// 마지막 정상 좌표 수신 후 1초 동안 유지.
-// -1이 와도 즉시 삭제하지 않고, 이 시간이 지나면 삭제됨.
 const FIRST_TTL_MS = 1000;
 
+// ================================================================
+// 새 좌표 키싱크 설정
+// /xy와 저장소를 완전히 분리한다.
+// ================================================================
+
+// Render 왕복이 잠깐 밀려도 MAIN이 바로 사라지지 않도록 3초 유지.
+// 실제 SUB 프로그램은 자체 수신 타임아웃으로 더 빨리 입력을 멈춘다.
+const SYNC_TTL_MS = 3000;
+
 // Render Environment Variables에서 MAP_PASS를 바꾸면 접속 비밀번호가 바뀜.
-// MAP_PASS를 설정하지 않으면 기본값은 yddo123.
 const ACCESS_PASS = process.env.MAP_PASS || "yddo123";
 
+// 기존 패자 지도 사람 데이터
 const players = new Map();
+
+// 새 좌표 키싱크 데이터
+const syncPlayers = new Map();
+
+// ================================================================
+// 공통 정리 함수
+// ================================================================
 
 function cleanName(name) {
   if (!name) return "";
+
   return String(name)
     .replace(/\|/g, "")
     .replace(/\r/g, "")
     .replace(/\n/g, "")
     .trim()
     .slice(0, 16);
+}
+
+// SESSION_MAIN, 컴퓨터명, PID가 들어가므로 sync 쪽은 64자 허용.
+function cleanSyncName(name) {
+  if (!name) return "";
+
+  return String(name)
+    .replace(/\|/g, "")
+    .replace(/\r/g, "")
+    .replace(/\n/g, "")
+    .trim()
+    .slice(0, 64);
 }
 
 function cleanColor(color) {
@@ -52,9 +81,16 @@ function cleanColor(color) {
   if (c === "yellow") return "darkyellow";
   if (c === "blue") return "skyblue";
   if (c === "green") return "green";
-  if (c === "whitecircle" || c === "white_circle" || c === "whiteinner" || c === "white_inner") {
+
+  if (
+    c === "whitecircle" ||
+    c === "white_circle" ||
+    c === "whiteinner" ||
+    c === "white_inner"
+  ) {
     return "whitecircle";
   }
+
   if (c === "whitex" || c === "white_x") {
     return "whitex";
   }
@@ -62,9 +98,33 @@ function cleanColor(color) {
   return "skyblue";
 }
 
+// 좌표 키싱크 상태만 허용.
+// M:R:1:25 = MAIN, 오른쪽, 이동 중, 시퀀스 25
+// S:N:0:0  = SUB 생존 좌표
+function cleanSyncState(state) {
+  const raw = String(state || "").trim();
+
+  const match = raw.match(
+    /^([MS]):([LRUDN]):([01]):(\d{1,10})$/i
+  );
+
+  if (!match) return "S:N:0:0";
+
+  return [
+    match[1].toUpperCase(),
+    match[2].toUpperCase(),
+    match[3],
+    match[4]
+  ].join(":");
+}
+
 function okPass(pass) {
   return String(pass || "") === String(ACCESS_PASS || "");
 }
+
+// ================================================================
+// 기존 패자 지도 데이터
+// ================================================================
 
 function cleanOld() {
   const now = Date.now();
@@ -112,9 +172,10 @@ function getMajorPoint(xKey, yKey, tKey, ttlMs) {
       continue;
     }
 
-    // 다수결: count 많은 좌표 우선
-    // 동률이면 더 최근 좌표 우선
-    if (g.count > best.count || (g.count === best.count && g.latest > best.latest)) {
+    if (
+      g.count > best.count ||
+      (g.count === best.count && g.latest > best.latest)
+    ) {
       best = g;
     }
   }
@@ -123,11 +184,21 @@ function getMajorPoint(xKey, yKey, tKey, ttlMs) {
 }
 
 function getMajorBless() {
-  return getMajorPoint("blessX", "blessY", "blessT", BLESS_TTL_MS);
+  return getMajorPoint(
+    "blessX",
+    "blessY",
+    "blessT",
+    BLESS_TTL_MS
+  );
 }
 
 function getMajorFirst() {
-  return getMajorPoint("firstX", "firstY", "firstT", FIRST_TTL_MS);
+  return getMajorPoint(
+    "firstX",
+    "firstY",
+    "firstT",
+    FIRST_TTL_MS
+  );
 }
 
 function makeText() {
@@ -135,6 +206,7 @@ function makeText() {
 
   const lines = [];
 
+  // 기존 응답 형식 그대로 유지.
   for (const [name, p] of players.entries()) {
     lines.push(`P|${name}|${p.x}|${p.y}|${p.color}`);
   }
@@ -148,25 +220,66 @@ function makeText() {
   const first = getMajorFirst();
 
   if (first) {
-    // F = 1등 좌표
     lines.push(`F|${first.x}|${first.y}|${first.count}`);
   }
 
   return lines.join("\n");
 }
 
+// ================================================================
+// 새 좌표 키싱크 데이터
+// ================================================================
+
+function cleanOldSync() {
+  const now = Date.now();
+
+  for (const [name, p] of syncPlayers.entries()) {
+    if (now - p.t > SYNC_TTL_MS) {
+      syncPlayers.delete(name);
+    }
+  }
+}
+
+function makeSyncText() {
+  cleanOldSync();
+
+  const lines = [];
+
+  // S|이름|X|Y|상태
+  // 패자 지도 /xy 응답과 섞지 않는다.
+  for (const [name, p] of syncPlayers.entries()) {
+    lines.push(`S|${name}|${p.x}|${p.y}|${p.state}`);
+  }
+
+  return lines.join("\n");
+}
+
+// ================================================================
+// 상태 확인
+// ================================================================
+
 app.get("/", (req, res) => {
-  res.type("text/plain").send("bukbang xy server ok");
+  res
+    .type("text/plain")
+    .send("bukbang xy + coordinate sync server ok");
 });
 
 app.post("/check", (req, res) => {
   if (!okPass(req.body.pass)) {
-    res.status(403).type("text/plain").send("ERR|BADPASS");
+    res
+      .status(403)
+      .type("text/plain")
+      .send("ERR|BADPASS");
     return;
   }
 
   res.type("text/plain").send("OK");
 });
+
+// ================================================================
+// 기존 패자 지도 /xy
+// 이 구간은 기존 동작을 그대로 유지한다.
+// ================================================================
 
 app.get("/xy", (req, res) => {
   res.type("text/plain").send(makeText());
@@ -174,7 +287,10 @@ app.get("/xy", (req, res) => {
 
 app.post("/xy", (req, res) => {
   if (!okPass(req.body.pass)) {
-    res.status(403).type("text/plain").send("ERR|BADPASS");
+    res
+      .status(403)
+      .type("text/plain")
+      .send("ERR|BADPASS");
     return;
   }
 
@@ -187,13 +303,26 @@ app.post("/xy", (req, res) => {
   const blessY = parseInt(req.body.blessY, 10);
 
   // 클라가 firstX/firstY 또는 rank1X/rank1Y 둘 중 뭐로 보내도 받음.
-  const firstXRaw = req.body.firstX !== undefined ? req.body.firstX : req.body.rank1X;
-  const firstYRaw = req.body.firstY !== undefined ? req.body.firstY : req.body.rank1Y;
+  const firstXRaw =
+    req.body.firstX !== undefined
+      ? req.body.firstX
+      : req.body.rank1X;
+
+  const firstYRaw =
+    req.body.firstY !== undefined
+      ? req.body.firstY
+      : req.body.rank1Y;
 
   const firstX = parseInt(firstXRaw, 10);
   const firstY = parseInt(firstYRaw, 10);
 
-  if (name && Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0) {
+  if (
+    name &&
+    Number.isFinite(x) &&
+    Number.isFinite(y) &&
+    x >= 0 &&
+    y >= 0
+  ) {
     const old = players.get(name) || {};
 
     const next = {
@@ -211,32 +340,26 @@ app.post("/xy", (req, res) => {
       firstT: old.firstT ?? 0
     };
 
-    if (Number.isFinite(blessX) && Number.isFinite(blessY)) {
+    if (
+      Number.isFinite(blessX) &&
+      Number.isFinite(blessY)
+    ) {
       if (blessX >= 0 && blessY >= 0) {
-        // 유효 축복 좌표만 갱신.
         next.blessX = blessX;
         next.blessY = blessY;
         next.blessT = Date.now();
       }
-
-      // 중요:
-      // blessX/blessY가 -1이어도 즉시 삭제하지 않는다.
-      // 마지막 정상 축복 좌표는 BLESS_TTL_MS 동안 유지된다.
-      // 진짜로 아무도 정상 좌표를 안 보내면 getMajorBless()에서 자동으로 사라진다.
     }
 
-    if (Number.isFinite(firstX) && Number.isFinite(firstY)) {
+    if (
+      Number.isFinite(firstX) &&
+      Number.isFinite(firstY)
+    ) {
       if (firstX >= 0 && firstY >= 0) {
-        // 유효 1등 좌표만 갱신.
         next.firstX = firstX;
         next.firstY = firstY;
         next.firstT = Date.now();
       }
-
-      // 중요:
-      // firstX/firstY가 -1이어도 즉시 삭제하지 않는다.
-      // 마지막 정상 1등 좌표는 FIRST_TTL_MS 동안 유지된다.
-      // 진짜로 아무도 정상 좌표를 안 보내면 getMajorFirst()에서 자동으로 사라진다.
     }
 
     players.set(name, next);
@@ -245,6 +368,49 @@ app.post("/xy", (req, res) => {
   res.type("text/plain").send(makeText());
 });
 
+// ================================================================
+// 새 좌표 키싱크 /sync
+// 패자 지도 players, color, bless, first와 완전히 별도.
+// ================================================================
+
+app.get("/sync", (req, res) => {
+  res.type("text/plain").send(makeSyncText());
+});
+
+app.post("/sync", (req, res) => {
+  if (!okPass(req.body.pass)) {
+    res
+      .status(403)
+      .type("text/plain")
+      .send("ERR|BADPASS");
+    return;
+  }
+
+  const name = cleanSyncName(req.body.name);
+  const x = parseInt(req.body.x, 10);
+  const y = parseInt(req.body.y, 10);
+  const state = cleanSyncState(req.body.state);
+
+  if (
+    name &&
+    Number.isFinite(x) &&
+    Number.isFinite(y) &&
+    x >= 0 &&
+    y >= 0
+  ) {
+    syncPlayers.set(name, {
+      x,
+      y,
+      state,
+      t: Date.now()
+    });
+  }
+
+  res.type("text/plain").send(makeSyncText());
+});
+
 app.listen(PORT, () => {
-  console.log(`bukbang xy server running on ${PORT}`);
+  console.log(
+    `bukbang xy + coordinate sync server running on ${PORT}`
+  );
 });
