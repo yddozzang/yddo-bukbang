@@ -41,6 +41,10 @@ const players = new Map();
 // 새 좌표 키싱크 데이터
 const syncPlayers = new Map();
 
+// 세션별로 메인이 학습한 굴 전이 기록.
+// R|세션|이전맵|다음맵|출구X|출구Y|입력|순번
+const syncRoutes = new Map();
+
 // ================================================================
 // 공통 정리 함수
 // ================================================================
@@ -116,6 +120,25 @@ function cleanSyncState(state) {
     match[3],
     match[4]
   ].join(":");
+}
+
+function cleanSession(session) {
+  return String(session || "")
+    .replace(/\|/g, "")
+    .replace(/\r/g, "")
+    .replace(/\n/g, "")
+    .trim()
+    .slice(0, 32);
+}
+
+function cleanMapHash(value) {
+  const hash = String(value || "").trim().toUpperCase();
+  return /^[0-9A-F]{16}$/.test(hash) ? hash : "";
+}
+
+function cleanRouteMove(value) {
+  const move = String(value || "").trim().toUpperCase();
+  return /^[LRUDE]$/.test(move) ? move : "";
 }
 
 function okPass(pass) {
@@ -240,15 +263,30 @@ function cleanOldSync() {
   }
 }
 
-function makeSyncText() {
+function makeSyncText(sessionFilter = "") {
   cleanOldSync();
 
   const lines = [];
 
-  // S|이름|X|Y|상태
-  // 패자 지도 /xy 응답과 섞지 않는다.
+  // S|이름|X|Y|상태|맵지문
   for (const [name, p] of syncPlayers.entries()) {
-    lines.push(`S|${name}|${p.x}|${p.y}|${p.state}`);
+    lines.push(
+      `S|${name}|${p.x}|${p.y}|${p.state}|${p.mapHash || ""}`
+    );
+  }
+
+  for (const route of syncRoutes.values()) {
+    if (
+      sessionFilter &&
+      route.session !== sessionFilter
+    ) {
+      continue;
+    }
+
+    lines.push(
+      `R|${route.session}|${route.fromHash}|${route.toHash}|` +
+      `${route.x}|${route.y}|${route.move}|${route.seq}`
+    );
   }
 
   return lines.join("\n");
@@ -374,7 +412,8 @@ app.post("/xy", (req, res) => {
 // ================================================================
 
 app.get("/sync", (req, res) => {
-  res.type("text/plain").send(makeSyncText());
+  const session = cleanSession(req.query.session);
+  res.type("text/plain").send(makeSyncText(session));
 });
 
 app.post("/sync", (req, res) => {
@@ -386,10 +425,12 @@ app.post("/sync", (req, res) => {
     return;
   }
 
+  const session = cleanSession(req.body.session);
   const name = cleanSyncName(req.body.name);
   const x = parseInt(req.body.x, 10);
   const y = parseInt(req.body.y, 10);
   const state = cleanSyncState(req.body.state);
+  const mapHash = cleanMapHash(req.body.map);
 
   if (
     name &&
@@ -402,11 +443,56 @@ app.post("/sync", (req, res) => {
       x,
       y,
       state,
+      mapHash,
+      session,
       t: Date.now()
     });
   }
 
-  res.type("text/plain").send(makeSyncText());
+  const routeFrom = cleanMapHash(req.body.routeFrom);
+  const routeTo = cleanMapHash(req.body.routeTo);
+  const routeX = parseInt(req.body.routeX, 10);
+  const routeY = parseInt(req.body.routeY, 10);
+  const routeMove = cleanRouteMove(req.body.routeMove);
+  const routeSeq = parseInt(req.body.routeSeq, 10);
+
+  if (
+    session &&
+    routeFrom &&
+    routeTo &&
+    Number.isFinite(routeX) &&
+    Number.isFinite(routeY) &&
+    routeX >= 0 &&
+    routeY >= 0 &&
+    routeMove &&
+    Number.isFinite(routeSeq) &&
+    routeSeq >= 0
+  ) {
+    const key = [
+      session,
+      routeFrom,
+      routeTo,
+      routeX,
+      routeY,
+      routeMove
+    ].join("|");
+
+    const old = syncRoutes.get(key);
+
+    if (!old || routeSeq >= old.seq) {
+      syncRoutes.set(key, {
+        session,
+        fromHash: routeFrom,
+        toHash: routeTo,
+        x: routeX,
+        y: routeY,
+        move: routeMove,
+        seq: routeSeq
+      });
+    }
+  }
+
+  res.type("text/plain").send(makeSyncText(session));
 });
 
 app.listen(PORT, () => {
