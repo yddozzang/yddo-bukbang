@@ -14,52 +14,53 @@ const PORT = process.env.PORT || 3000;
 // 기존 패자 지도 설정
 // ================================================================
 
-// 지도 점 유효 시간. 250~1000ms 사이 클라이언트에서 페이드.
 const PLAYER_TTL_MS = 1000;
-
-// ONLINE 표시는 좌표점과 분리한다. 짧은 네트워크 흔들림에는 목록이 사라지지 않게 3초 유지.
 const ONLINE_TTL_MS = 3000;
-
-// 축복 좌표 유효 시간.
 const BLESS_TTL_MS = 1000;
-
-// 1등 좌표 유효 시간.
 const FIRST_TTL_MS = 1000;
 
 // ================================================================
-// 새 좌표 키싱크 설정
-// /xy와 저장소를 완전히 분리한다.
+// 좌표 키싱크 설정
+// /xy와 저장소 완전 분리
 // ================================================================
 
-// Render 왕복이 잠깐 밀려도 MAIN이 바로 사라지지 않도록 3초 유지.
-// 실제 SUB 프로그램은 자체 수신 타임아웃으로 더 빨리 입력을 멈춘다.
 const SYNC_TTL_MS = 3000;
 
-// Render Environment Variables에서 MAP_PASS를 바꾸면 접속 비밀번호가 바뀜.
-const ACCESS_PASS = process.env.MAP_PASS || "yddo123";
+const ACCESS_PASS =
+  process.env.MAP_PASS || "yddo123";
 
-// MAP MASTER 전용 키. Render에 MAP_MASTER_KEY를 따로 만들면 그 값을 사용한다.
-// 설정하지 않으면 기존 MAP_PASS와 같은 값을 사용하므로 바로 동작한다.
-const MAP_MASTER_KEY = process.env.MAP_MASTER_KEY || ACCESS_PASS;
-
-// 맵 파일은 Render 메모리에 보관한다. Render 재시작 시 비워지지만
-// 켜져 있는 MAP MASTER 클라이언트가 자동으로 다시 업로드한다.
-let mapVersion = 0;
-const mapBlobStore = new Map(); // sha256 -> Buffer
-let mapManifest = new Map();   // filename -> { sha, size }
-
-// 기존 패자 지도 사람 데이터
-const players = new Map();
-
-// 새 좌표 키싱크 데이터
-const syncPlayers = new Map();
-
-// 세션별로 메인이 학습한 굴 전이 기록.
-// R|세션|이전맵|다음맵|출구X|출구Y|입력|순번
-const syncRoutes = new Map();
+const MAP_MASTER_KEY =
+  process.env.MAP_MASTER_KEY ||
+  ACCESS_PASS;
 
 // ================================================================
-// 공통 정리 함수
+// 맵 실시간 공유
+// Render 메모리 방식
+// ================================================================
+
+let mapVersion = 0;
+
+const mapBlobStore =
+  new Map();
+
+let mapManifest =
+  new Map();
+
+// ================================================================
+// 실시간 사용자
+// ================================================================
+
+const players =
+  new Map();
+
+const syncPlayers =
+  new Map();
+
+const syncRoutes =
+  new Map();
+
+// ================================================================
+// 공통
 // ================================================================
 
 function cleanName(name) {
@@ -73,7 +74,6 @@ function cleanName(name) {
     .slice(0, 16);
 }
 
-// 패자지도 범용 맵 이름. /sync의 mapHash와는 완전히 별개다.
 function cleanMapName(name) {
   if (!name) return "";
 
@@ -85,7 +85,6 @@ function cleanMapName(name) {
     .slice(0, 48);
 }
 
-// SESSION_MAIN, 컴퓨터명, PID가 들어가므로 sync 쪽은 64자 허용.
 function cleanSyncName(name) {
   if (!name) return "";
 
@@ -98,9 +97,11 @@ function cleanSyncName(name) {
 }
 
 function cleanColor(color) {
-  const raw = String(color || "").trim().toLowerCase();
+  const raw =
+    String(color || "")
+      .trim()
+      .toLowerCase();
 
-  // 현재 표식
   if (
     raw === "whitecircle" ||
     raw === "white_circle" ||
@@ -117,7 +118,8 @@ function cleanColor(color) {
     return "whitex";
   }
 
-  if (raw === "red") return "red";
+  if (raw === "red")
+    return "red";
 
   if (
     raw === "darkyellow" ||
@@ -133,8 +135,11 @@ function cleanColor(color) {
     return "skyblue";
   }
 
-  if (raw === "purple") return "purple";
-  if (raw === "green") return "green";
+  if (raw === "purple")
+    return "purple";
+
+  if (raw === "green")
+    return "green";
 
   if (
     raw === "skull" ||
@@ -150,27 +155,36 @@ function cleanColor(color) {
     return "bird";
   }
 
-  // 직전 숫자표식 버전 호환
-  if (/^r[0-9]$/.test(raw)) return "red";
-  if (/^y[0-9]$/.test(raw)) return "darkyellow";
-  if (/^b[0-9]$/.test(raw)) return "skyblue";
-  if (/^p[0-9]$/.test(raw)) return "purple";
-  if (/^g[0-9]$/.test(raw)) return "green";
+  if (/^r[0-9]$/.test(raw))
+    return "red";
+
+  if (/^y[0-9]$/.test(raw))
+    return "darkyellow";
+
+  if (/^b[0-9]$/.test(raw))
+    return "skyblue";
+
+  if (/^p[0-9]$/.test(raw))
+    return "purple";
+
+  if (/^g[0-9]$/.test(raw))
+    return "green";
 
   return "whitecircle";
 }
 
-// 좌표 키싱크 상태만 허용.
-// M:R:1:25 = MAIN, 오른쪽, 이동 중, 시퀀스 25
-// S:N:0:0  = SUB 생존 좌표
 function cleanSyncState(state) {
-  const raw = String(state || "").trim();
+  const raw =
+    String(state || "")
+      .trim();
 
-  const match = raw.match(
-    /^([MS]):([LRUDN]):([01]):(\d{1,10})$/i
-  );
+  const match =
+    raw.match(
+      /^([MS]):([LRUDN]):([01]):(\d{1,10})$/i
+    );
 
-  if (!match) return "S:N:0:0";
+  if (!match)
+    return "S:N:0:0";
 
   return [
     match[1].toUpperCase(),
@@ -190,9 +204,10 @@ function cleanSession(session) {
 }
 
 function cleanMapHash(value) {
-  const hash = String(value || "")
-    .trim()
-    .toUpperCase();
+  const hash =
+    String(value || "")
+      .trim()
+      .toUpperCase();
 
   return /^[0-9A-F]{16}$/.test(hash)
     ? hash
@@ -200,9 +215,10 @@ function cleanMapHash(value) {
 }
 
 function cleanRouteMove(value) {
-  const move = String(value || "")
-    .trim()
-    .toUpperCase();
+  const move =
+    String(value || "")
+      .trim()
+      .toUpperCase();
 
   return /^[LRUDE]$/.test(move)
     ? move
@@ -228,9 +244,14 @@ function okMapMaster(master) {
 // ================================================================
 
 function cleanMapFileName(name) {
-  const n = String(name || "").trim();
+  const n =
+    String(name || "")
+      .trim();
 
-  if (!n || n.length > 160) {
+  if (
+    !n ||
+    n.length > 160
+  ) {
     return "";
   }
 
@@ -243,35 +264,29 @@ function cleanMapFileName(name) {
     return "";
   }
 
-  if (/[\x00-\x1f]/.test(n)) {
+  if (/[\x00-\x1f]/.test(n))
     return "";
-  }
 
-  const lower = n.toLowerCase();
+  const lower =
+    n.toLowerCase();
 
-  if (lower === "maps.txt") {
+  if (lower === "maps.txt")
     return n;
-  }
 
-  if (lower.endsWith(".png")) {
+  if (lower.endsWith(".png"))
     return n;
-  }
 
-  if (lower.endsWith(".jpg")) {
+  if (lower.endsWith(".jpg"))
     return n;
-  }
 
-  if (lower.endsWith(".jpeg")) {
+  if (lower.endsWith(".jpeg"))
     return n;
-  }
 
-  if (lower.endsWith(".bmp")) {
+  if (lower.endsWith(".bmp"))
     return n;
-  }
 
-  if (lower.endsWith(".webp")) {
+  if (lower.endsWith(".webp"))
     return n;
-  }
 
   return "";
 }
@@ -309,9 +324,8 @@ function makeMapStateText() {
     const f =
       mapManifest.get(name);
 
-    if (!f) {
+    if (!f)
       continue;
-    }
 
     lines.push(
       `F|${encodeURIComponent(name)}|${f.sha}|${f.size}`
@@ -353,16 +367,14 @@ function parseCommitManifest(
     const raw
     of lines
   ) {
-    if (!raw) {
+    if (!raw)
       continue;
-    }
 
     const cut =
       raw.lastIndexOf("|");
 
-    if (cut <= 0) {
+    if (cut <= 0)
       return null;
-    }
 
     const name =
       cleanMapFileName(
@@ -402,7 +414,9 @@ function parseCommitManifest(
 
   if (
     !Array
-      .from(next.keys())
+      .from(
+        next.keys()
+      )
       .some(
         n =>
           n.toLowerCase() ===
@@ -419,18 +433,20 @@ function mapManifestSignature(
   manifest
 ) {
   const names =
-    Array.from(
-      manifest.keys()
-    ).sort(
-      (a, b) =>
-        a.localeCompare(
-          b,
-          "en",
-          {
-            sensitivity: "base"
-          }
-        )
-    );
+    Array
+      .from(
+        manifest.keys()
+      )
+      .sort(
+        (a, b) =>
+          a.localeCompare(
+            b,
+            "en",
+            {
+              sensitivity: "base"
+            }
+          )
+      );
 
   return names
     .map(
@@ -447,7 +463,7 @@ function mapManifestSignature(
 }
 
 // ================================================================
-// 기존 패자 지도 데이터
+// 지도 사용자
 // ================================================================
 
 function cleanOld() {
@@ -486,8 +502,9 @@ function getMajorPoint(
   ) {
     if (
       mapFilter !== null &&
-      String(p.map || "") !==
-        mapFilter
+      String(
+        p.map || ""
+      ) !== mapFilter
     ) {
       continue;
     }
@@ -604,6 +621,11 @@ function getMajorFirst(
   );
 }
 
+// ================================================================
+// 지도 응답
+// 실제 map과 화면 viewMap을 분리
+// ================================================================
+
 function makeText(
   options = {}
 ) {
@@ -617,9 +639,14 @@ function makeText(
   const mapMode =
     options.mapMode === true;
 
+  // map = 사용자의 실제 위치
+  // viewMap = 화면에서 보고 싶은 지도
+  // viewMap이 없으면 기존 클라이언트처럼 map 사용
   const requestMap =
     cleanMapName(
-      options.map || ""
+      options.viewMap ||
+      options.map ||
+      ""
     );
 
   const requester =
@@ -629,7 +656,7 @@ function makeText(
 
   // ------------------------------------------------
   // P
-  // 현재 맵 지도 점
+  // 화면에서 보고 있는 지도 기준
   // ------------------------------------------------
 
   for (
@@ -639,8 +666,9 @@ function makeText(
     if (mapMode) {
       if (requestMap) {
         if (
-          String(p.map || "") !==
-          requestMap
+          String(
+            p.map || ""
+          ) !== requestMap
         ) {
           continue;
         }
@@ -657,7 +685,8 @@ function makeText(
     const ageMs =
       Math.max(
         0,
-        now - (p.t || 0)
+        now -
+          (p.t || 0)
       );
 
     if (
@@ -675,7 +704,7 @@ function makeText(
 
   // ------------------------------------------------
   // U
-  // 전체 ONLINE
+  // ONLINE은 실제 위치 기준
   // ------------------------------------------------
 
   for (
@@ -685,7 +714,8 @@ function makeText(
     const ageMs =
       Math.max(
         0,
-        now - (p.t || 0)
+        now -
+          (p.t || 0)
       );
 
     if (
@@ -700,6 +730,7 @@ function makeText(
     );
   }
 
+  // 축복/1등 역시 화면에서 보고 있는 지도 기준
   const pointMapFilter =
     mapMode
       ? requestMap
@@ -750,7 +781,7 @@ function makeText(
 }
 
 // ================================================================
-// 새 좌표 키싱크 데이터
+// 좌표 키싱크
 // ================================================================
 
 function cleanOldSync() {
@@ -808,7 +839,7 @@ function makeSyncText(
 }
 
 // ================================================================
-// 상태 확인
+// 상태
 // ================================================================
 
 app.get(
@@ -847,8 +878,7 @@ app.post(
 );
 
 // ================================================================
-// map 폴더 실시간 공유
-// /xy와 /sync 어느 저장소도 건드리지 않는다.
+// map 폴더 공유
 // ================================================================
 
 app.get(
@@ -956,7 +986,8 @@ app.post(
       );
 
     if (
-      actualSha !== wantSha
+      actualSha !==
+      wantSha
     ) {
       res
         .status(400)
@@ -1117,9 +1148,7 @@ app.get(
 
     const item =
       name
-        ? mapManifest.get(
-            name
-          )
+        ? mapManifest.get(name)
         : null;
 
     if (!item) {
@@ -1142,8 +1171,7 @@ app.get(
 
     if (
       wantSha &&
-      wantSha !==
-        item.sha
+      wantSha !== item.sha
     ) {
       res
         .status(409)
@@ -1175,38 +1203,23 @@ app.get(
       name.toLowerCase();
 
     if (
-      lower.endsWith(
-        ".png"
-      )
+      lower.endsWith(".png")
     ) {
-      res.type(
-        "image/png"
-      );
+      res.type("image/png");
     }
     else if (
-      lower.endsWith(
-        ".jpg"
-      ) ||
-      lower.endsWith(
-        ".jpeg"
-      )
+      lower.endsWith(".jpg") ||
+      lower.endsWith(".jpeg")
     ) {
-      res.type(
-        "image/jpeg"
-      );
+      res.type("image/jpeg");
     }
     else if (
-      lower.endsWith(
-        ".webp"
-      )
+      lower.endsWith(".webp")
     ) {
-      res.type(
-        "image/webp"
-      );
+      res.type("image/webp");
     }
     else if (
-      lower ===
-      "maps.txt"
+      lower === "maps.txt"
     ) {
       res.type(
         "text/plain; charset=utf-8"
@@ -1223,7 +1236,7 @@ app.get(
 );
 
 // ================================================================
-// 기존 패자 지도 /xy
+// 지도 /xy
 // ================================================================
 
 app.get(
@@ -1277,9 +1290,16 @@ app.post(
         req.body.color
       );
 
+    // 실제 사용자가 있는 맵
     const map =
       cleanMapName(
         req.body.map
+      );
+
+    // 화면에서 보고 싶은 맵
+    const viewMap =
+      cleanMapName(
+        req.body.viewMap
       );
 
     const mapMode =
@@ -1357,6 +1377,8 @@ app.post(
 
         color,
 
+        // 여기는 무조건 실제 위치만 저장한다.
+        // viewMap은 플레이어 상태에 저장하지 않는다.
         map:
           mapMode
             ? map
@@ -1391,7 +1413,9 @@ app.post(
       ) {
         next.x = x;
         next.y = y;
-        next.coordValid = true;
+
+        next.coordValid =
+          true;
       }
 
       if (
@@ -1400,21 +1424,18 @@ app.post(
         ) &&
         Number.isFinite(
           blessY
-        )
+        ) &&
+        blessX >= 0 &&
+        blessY >= 0
       ) {
-        if (
-          blessX >= 0 &&
-          blessY >= 0
-        ) {
-          next.blessX =
-            blessX;
+        next.blessX =
+          blessX;
 
-          next.blessY =
-            blessY;
+        next.blessY =
+          blessY;
 
-          next.blessT =
-            Date.now();
-        }
+        next.blessT =
+          Date.now();
       }
 
       if (
@@ -1423,21 +1444,18 @@ app.post(
         ) &&
         Number.isFinite(
           firstY
-        )
+        ) &&
+        firstX >= 0 &&
+        firstY >= 0
       ) {
-        if (
-          firstX >= 0 &&
-          firstY >= 0
-        ) {
-          next.firstX =
-            firstX;
+        next.firstX =
+          firstX;
 
-          next.firstY =
-            firstY;
+        next.firstY =
+          firstY;
 
-          next.firstT =
-            Date.now();
-        }
+        next.firstT =
+          Date.now();
       }
 
       players.set(
@@ -1452,6 +1470,7 @@ app.post(
         makeText({
           mapMode,
           map,
+          viewMap,
           requester:
             name
         })
@@ -1461,7 +1480,6 @@ app.post(
 
 // ================================================================
 // 좌표 키싱크 /sync
-// 기존 저장소/프로토콜 그대로 유지
 // ================================================================
 
 app.get(
